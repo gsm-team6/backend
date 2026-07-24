@@ -16,8 +16,8 @@ exports.createReport = async (req, res) => {
         const finalContent = content || description || '';
         const finalType = report_type || category || '기타';
 
-        // AI 자동 심각도 분류: 위험 키워드가 감지되면 '긴급'으로 분류됩니다.
-        const { severity, matchedKeyword } = classifySeverity(finalContent);
+        // AI 자동 심각도 분류: Gemini API로 판단하고, 실패 시 키워드 분류로 대체됩니다.
+        const { severity, matchedKeyword } = await classifySeverity(finalContent);
         if (severity === '긴급') {
             console.log(`[긴급 신고 감지] 키워드="${matchedKeyword}" 내용="${finalContent}"`);
         }
@@ -226,7 +226,7 @@ exports.reclassifySeverity = async (req, res) => {
         const { rows } = await pool.query('SELECT id, content FROM reports');
 
         for (const row of rows) {
-            const { severity } = classifySeverity(row.content);
+            const { severity } = await classifySeverity(row.content);
             await pool.query('UPDATE reports SET severity = $1 WHERE id = $2', [severity, row.id]);
         }
 
