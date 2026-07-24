@@ -5,6 +5,7 @@ const cors = require('cors');
 // 1. 라우터 파일들 불러오기
 const authRoutes = require('./routes/authRoutes');
 const reportRoutes = require('./routes/reportRoutes');
+const { ensureSeverityColumn } = require('./config/migrate');
 
 // ★ 2. express 앱 객체 생성 (반드시 app.use들보다 상단에 있어야 합니다!)
 const app = express();
@@ -21,4 +22,9 @@ app.use('/api/reports', reportRoutes);
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`서버가 ${PORT}번 포트에서 정상 실행 중입니다.`);
+});
+
+// 신고 심각도(severity) 컬럼 마이그레이션 (없으면 생성, 있으면 무시)
+ensureSeverityColumn().catch((error) => {
+  console.error('severity 컬럼 마이그레이션 실패:', error);
 });

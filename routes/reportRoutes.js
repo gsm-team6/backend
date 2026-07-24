@@ -12,8 +12,9 @@ router.put('/notifications/read', reportController.markNotificationsAsRead); // 
 router.delete('/notifications/:id', reportController.deleteNotification); // 개별 알림 삭제
 
 // 기존 삭제 및 수정 라우트들
-router.post('/bulk-delete', reportController.bulkDeleteReports); 
-router.post('/cleanup', reportController.deleteOldReports); 
+router.post('/bulk-delete', reportController.bulkDeleteReports);
+router.post('/cleanup', reportController.deleteOldReports);
+router.post('/reclassify', reportController.reclassifySeverity); // 기존 신고 심각도 재분류
 router.put('/:id/status', reportController.updateReportStatus);
 router.delete('/:id', reportController.deleteReport);
 

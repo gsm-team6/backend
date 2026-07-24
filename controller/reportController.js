@@ -1,5 +1,6 @@
 // backend/controllers/reportController.js
 const pool = require('../config/db'); // 위에서 만든 db.js 연결
+const { classifySeverity } = require('../utils/severityClassifier');
 
 // 1. 안전 위험 신고하기 (POST)
 // 1. 안전 위험 신고하기 (POST)
@@ -15,21 +16,28 @@ exports.createReport = async (req, res) => {
         const finalContent = content || description || '';
         const finalType = report_type || category || '기타';
 
+        // AI 자동 심각도 분류: 위험 키워드가 감지되면 '긴급'으로 분류됩니다.
+        const { severity, matchedKeyword } = classifySeverity(finalContent);
+        if (severity === '긴급') {
+            console.log(`[긴급 신고 감지] 키워드="${matchedKeyword}" 내용="${finalContent}"`);
+        }
+
         // ★ status 기본값을 'PENDING' -> '접수' 로 수정
         const insertQuery = `
-            INSERT INTO reports (content, location, report_type, user_id, status) 
-            VALUES ($1, $2, $3, $4, '접수') 
+            INSERT INTO reports (content, location, report_type, user_id, status, severity)
+            VALUES ($1, $2, $3, $4, '접수', $5)
             RETURNING *
         `;
 
         const newReport = await pool.query(insertQuery, [
-            finalContent, 
-            location, 
-            finalType, 
-            user_id
+            finalContent,
+            location,
+            finalType,
+            user_id,
+            severity
         ]);
 
-        res.status(201).json({ success: true, data: newReport.rows[0] });
+        res.status(201).json({ success: true, data: newReport.rows[0], severityReason: matchedKeyword });
     } catch (error) {
         console.error('신고 접수 DB 에러:', error);
         res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
@@ -42,11 +50,14 @@ exports.createReport = async (req, res) => {
 exports.getReports = async (req, res) => {
     try {
         // 기존 쿼리에 혹시 student_id가 있었다면 제거하고 구조를 맞춰줍니다.
+        // 긴급 신고를 최상단에 자동 노출하고, 같은 심각도 내에서는 최신순으로 정렬합니다.
         const query = `
-            SELECT r.*, json_build_object('id', u.id, 'name', u.name, 'email', u.email) as users 
-            FROM reports r 
-            LEFT JOIN users u ON r.user_id = u.id 
-            ORDER BY r.created_at DESC;
+            SELECT r.*, json_build_object('id', u.id, 'name', u.name, 'email', u.email) as users
+            FROM reports r
+            LEFT JOIN users u ON r.user_id = u.id
+            ORDER BY
+                CASE r.severity WHEN '긴급' THEN 0 WHEN '보통' THEN 1 ELSE 2 END,
+                r.created_at DESC;
         `;
         const result = await pool.query(query);
         
@@ -209,7 +220,24 @@ exports.markNotificationsAsRead = async (req, res) => {
     }
 };
 
-// 9. [학생] 개별 알림 삭제
+// 9. [관리자] 기존 신고 심각도 재분류 (severity 컬럼 도입 전 데이터용)
+exports.reclassifySeverity = async (req, res) => {
+    try {
+        const { rows } = await pool.query('SELECT id, content FROM reports');
+
+        for (const row of rows) {
+            const { severity } = classifySeverity(row.content);
+            await pool.query('UPDATE reports SET severity = $1 WHERE id = $2', [severity, row.id]);
+        }
+
+        res.status(200).json({ success: true, message: `${rows.length}건의 신고를 재분류했습니다.` });
+    } catch (error) {
+        console.error('심각도 재분류 에러:', error);
+        res.status(500).json({ success: false, message: '서버 오류가 발생했습니다.' });
+    }
+};
+
+// 10. [학생] 개별 알림 삭제
 exports.deleteNotification = async (req, res) => {
     try {
         const { id } = req.params;
