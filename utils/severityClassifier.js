@@ -9,7 +9,7 @@ const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 
-const API_TIMEOUT_MS = 8000;
+const API_TIMEOUT_MS = 15000;
 const SEVERITY_LEVELS = ['긴급', '보통', '낮음'];
 
 const SYSTEM_PROMPT = `당신은 학교 시설물 안전 신고를 분류하고 정리하는 안전 담당자입니다.
@@ -35,14 +35,30 @@ const URGENT_KEYWORDS = [
 
 const LOW_KEYWORDS = [
     '경미', '미관', '낙서', '먼지', '가벼운 흠집', '사소한', '흠집',
-    '단순 문의', '문의사항', '냄새 약간',
+    '단순 문의', '문의사항', '냄새 약간', '가벼운 손상', '단순 파손',
+    '살짝 손상', '페인트 벗겨짐', '벽지', '조금 헐거워', '단순 확인',
 ];
 
 // AI 없이도 최소한의 요약/추천을 제공하기 위한 폴백용 헬퍼
-function summarizeText(text, maxLength = 50) {
+// 글자 수로 무조건 자르면 문장/단어 중간에서 끊기므로 문장 부호나 공백 경계에서 자른다.
+function summarizeText(text, maxLength = 80) {
     const clean = (text || '').trim();
     if (!clean) return '신고 내용이 없습니다.';
-    return clean.length > maxLength ? `${clean.slice(0, maxLength)}...` : clean;
+    if (clean.length <= maxLength) return clean;
+
+    const truncated = clean.slice(0, maxLength);
+    const sentenceEnd = Math.max(
+        truncated.lastIndexOf('.'),
+        truncated.lastIndexOf('!'),
+        truncated.lastIndexOf('?')
+    );
+    if (sentenceEnd >= maxLength * 0.4) {
+        return truncated.slice(0, sentenceEnd + 1);
+    }
+
+    const lastSpace = truncated.lastIndexOf(' ');
+    const cut = lastSpace >= maxLength * 0.4 ? truncated.slice(0, lastSpace) : truncated;
+    return `${cut.trim()}...`;
 }
 
 function recommendBySeverity(severity) {
