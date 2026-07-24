@@ -44,6 +44,10 @@ jobs:
             cd ${{ secrets.EC2_APP_DIR }}
             git fetch origin main
             git reset --hard origin/main
-            npm ci --omit=dev
-            pm2 reload team6_back || pm2 start server.js --name team6_back
-            pm2 save
+            sudo docker build -t team6-backend:latest .
+            sudo docker rm -f team6-backend 2>/dev/null || true
+            sudo docker run -d --name team6-backend --restart unless-stopped -p 5000:5000 \
+              -e DATABASE_URL="${{ secrets.DATABASE_URL }}" \
+              team6-backend:latest
+            sudo docker image prune -f
+
