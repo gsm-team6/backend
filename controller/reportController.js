@@ -17,15 +17,16 @@ exports.createReport = async (req, res) => {
         const finalType = report_type || category || '기타';
 
         // AI 자동 심각도 분류: Gemini API로 판단하고, 실패 시 키워드 분류로 대체됩니다.
-        const { severity, matchedKeyword } = await classifySeverity(finalContent);
+        // 심각도 분류와 함께 내용 요약(summary), 우선 대응 추천(recommendation)도 같이 생성됩니다.
+        const { severity, matchedKeyword, summary, recommendation } = await classifySeverity(finalContent);
         if (severity === '긴급') {
             console.log(`[긴급 신고 감지] 키워드="${matchedKeyword}" 내용="${finalContent}"`);
         }
 
         // ★ status 기본값을 'PENDING' -> '접수' 로 수정
         const insertQuery = `
-            INSERT INTO reports (content, location, report_type, user_id, status, severity)
-            VALUES ($1, $2, $3, $4, '접수', $5)
+            INSERT INTO reports (content, location, report_type, user_id, status, severity, summary, recommendation)
+            VALUES ($1, $2, $3, $4, '접수', $5, $6, $7)
             RETURNING *
         `;
 
@@ -34,7 +35,9 @@ exports.createReport = async (req, res) => {
             location,
             finalType,
             user_id,
-            severity
+            severity,
+            summary,
+            recommendation
         ]);
 
         res.status(201).json({ success: true, data: newReport.rows[0], severityReason: matchedKeyword });
@@ -220,14 +223,17 @@ exports.markNotificationsAsRead = async (req, res) => {
     }
 };
 
-// 9. [관리자] 기존 신고 심각도 재분류 (severity 컬럼 도입 전 데이터용)
+// 9. [관리자] 기존 신고 심각도/요약/추천 재분류 (관련 컬럼 도입 전 데이터용)
 exports.reclassifySeverity = async (req, res) => {
     try {
         const { rows } = await pool.query('SELECT id, content FROM reports');
 
         for (const row of rows) {
-            const { severity } = await classifySeverity(row.content);
-            await pool.query('UPDATE reports SET severity = $1 WHERE id = $2', [severity, row.id]);
+            const { severity, summary, recommendation } = await classifySeverity(row.content);
+            await pool.query(
+                'UPDATE reports SET severity = $1, summary = $2, recommendation = $3 WHERE id = $4',
+                [severity, summary, recommendation, row.id]
+            );
         }
 
         res.status(200).json({ success: true, message: `${rows.length}건의 신고를 재분류했습니다.` });

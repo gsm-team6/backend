@@ -1,7 +1,7 @@
 // backend/utils/severityClassifier.js
-// 신고 내용(텍스트)을 AI로 분석해 심각도를 자동 분류합니다.
-// '긴급' / '보통' / '낮음' 중 하나로 판단하며, OpenAI -> Gemini -> 키워드 분류
-// 순서로 사용 가능한 방식을 자동으로 선택합니다. (키 없음/호출 실패 시 다음 단계로 대체)
+// 신고 내용(텍스트)을 AI로 분석해 심각도 분류 + 내용 요약 + 우선 대응 추천을 함께 생성합니다.
+// OpenAI -> Gemini -> 키워드 분류 순서로 사용 가능한 방식을 자동으로 선택합니다.
+// (키 없음/호출 실패 시 다음 단계로 대체)
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
@@ -12,12 +12,16 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const API_TIMEOUT_MS = 8000;
 const SEVERITY_LEVELS = ['긴급', '보통', '낮음'];
 
-const SYSTEM_PROMPT = `당신은 학교 시설물 안전 신고를 분류하는 안전 담당자입니다.
-신고 내용을 읽고 심각도를 "긴급", "보통", "낮음" 중 하나로 분류하세요.
+const SYSTEM_PROMPT = `당신은 학교 시설물 안전 신고를 분류하고 정리하는 안전 담당자입니다.
+신고 내용을 읽고 아래 항목을 모두 작성하세요.
 
-- 긴급: 감전, 화재, 가스 누출, 붕괴, 추락 등 즉각적인 인명 피해 위험이 있는 경우
-- 보통: 파손, 고장 등 위험하지만 즉각적인 인명 피해 가능성은 낮은 경우
-- 낮음: 미관상 문제, 단순 문의 등 안전과 무관하거나 경미한 경우`;
+1. severity: 심각도를 "긴급", "보통", "낮음" 중 하나로 분류
+   - 긴급: 감전, 화재, 가스 누출, 붕괴, 추락 등 즉각적인 인명 피해 위험이 있는 경우
+   - 보통: 파손, 고장 등 위험하지만 즉각적인 인명 피해 가능성은 낮은 경우
+   - 낮음: 미관상 문제, 단순 문의 등 안전과 무관하거나 경미한 경우
+2. reason: severity로 분류한 근거를 한 문장으로 설명
+3. summary: 신고 내용을 한 문장(최대 50자 내외)으로 요약
+4. recommendation: 담당자가 취해야 할 우선 대응 방법을 한두 문장으로 구체적으로 추천 (예: 현장 통제, 담당 부서 연락, 점검 일정 등)`;
 
 const URGENT_KEYWORDS = [
     '전선 노출', '전선노출', '감전', '누전', '고압선',
@@ -34,6 +38,23 @@ const LOW_KEYWORDS = [
     '단순 문의', '문의사항', '냄새 약간',
 ];
 
+// AI 없이도 최소한의 요약/추천을 제공하기 위한 폴백용 헬퍼
+function summarizeText(text, maxLength = 50) {
+    const clean = (text || '').trim();
+    if (!clean) return '신고 내용이 없습니다.';
+    return clean.length > maxLength ? `${clean.slice(0, maxLength)}...` : clean;
+}
+
+function recommendBySeverity(severity) {
+    if (severity === '긴급') {
+        return '즉시 현장을 통제하고 시설관리팀/안전팀에 긴급 연락하세요. 필요 시 119 신고를 고려하세요.';
+    }
+    if (severity === '낮음') {
+        return '급하지 않은 사안이므로 정기 점검 일정에 포함하여 처리하세요.';
+    }
+    return '24시간 이내 담당 부서에 전달하여 점검 및 수리 일정을 조율하세요.';
+}
+
 // 모든 AI 호출이 불가능/실패할 때 사용하는 오프라인 최종 폴백
 function classifyByKeyword(text) {
     const normalized = (text || '').replace(/\s+/g, '');
@@ -42,17 +63,35 @@ function classifyByKeyword(text) {
         normalized.includes(keyword.replace(/\s+/g, ''))
     );
     if (urgentHit) {
-        return { severity: '긴급', matchedKeyword: urgentHit, source: 'keyword' };
+        return {
+            severity: '긴급',
+            matchedKeyword: urgentHit,
+            source: 'keyword',
+            summary: summarizeText(text),
+            recommendation: recommendBySeverity('긴급'),
+        };
     }
 
     const lowHit = LOW_KEYWORDS.find((keyword) =>
         normalized.includes(keyword.replace(/\s+/g, ''))
     );
     if (lowHit) {
-        return { severity: '낮음', matchedKeyword: lowHit, source: 'keyword' };
+        return {
+            severity: '낮음',
+            matchedKeyword: lowHit,
+            source: 'keyword',
+            summary: summarizeText(text),
+            recommendation: recommendBySeverity('낮음'),
+        };
     }
 
-    return { severity: '보통', matchedKeyword: null, source: 'keyword' };
+    return {
+        severity: '보통',
+        matchedKeyword: null,
+        source: 'keyword',
+        summary: summarizeText(text),
+        recommendation: recommendBySeverity('보통'),
+    };
 }
 
 async function classifyByOpenAI(text) {
@@ -83,8 +122,10 @@ async function classifyByOpenAI(text) {
                             properties: {
                                 severity: { type: 'string', enum: SEVERITY_LEVELS },
                                 reason: { type: 'string' },
+                                summary: { type: 'string' },
+                                recommendation: { type: 'string' },
                             },
-                            required: ['severity', 'reason'],
+                            required: ['severity', 'reason', 'summary', 'recommendation'],
                             additionalProperties: false,
                         },
                     },
@@ -108,7 +149,13 @@ async function classifyByOpenAI(text) {
             throw new Error(`알 수 없는 심각도 값: ${parsed.severity}`);
         }
 
-        return { severity: parsed.severity, matchedKeyword: parsed.reason, source: 'openai' };
+        return {
+            severity: parsed.severity,
+            matchedKeyword: parsed.reason,
+            summary: parsed.summary,
+            recommendation: parsed.recommendation,
+            source: 'openai',
+        };
     } finally {
         clearTimeout(timeout);
     }
@@ -134,8 +181,10 @@ async function classifyByGemini(text) {
                         properties: {
                             severity: { type: 'STRING', enum: SEVERITY_LEVELS },
                             reason: { type: 'STRING' },
+                            summary: { type: 'STRING' },
+                            recommendation: { type: 'STRING' },
                         },
-                        required: ['severity', 'reason'],
+                        required: ['severity', 'reason', 'summary', 'recommendation'],
                     },
                 },
             }),
@@ -157,7 +206,13 @@ async function classifyByGemini(text) {
             throw new Error(`알 수 없는 심각도 값: ${parsed.severity}`);
         }
 
-        return { severity: parsed.severity, matchedKeyword: parsed.reason, source: 'gemini' };
+        return {
+            severity: parsed.severity,
+            matchedKeyword: parsed.reason,
+            summary: parsed.summary,
+            recommendation: parsed.recommendation,
+            source: 'gemini',
+        };
     } finally {
         clearTimeout(timeout);
     }
